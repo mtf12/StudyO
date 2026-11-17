@@ -84,7 +84,9 @@ final class AIModel: ObservableObject {
         }
         // Re-check saved connections: a sign-in may have expired or been removed.
         if connected.contains("claude"), let claude = found.first(where: { $0.kind == .claude }) {
-            if await !claudeSignedIn(claude) { connected.remove("claude") }
+            // Only drop it when Claude Code clearly says it is signed out. A check that fails for
+            // another reason (slow start, extra output, no network) keeps the user signed in.
+            if await claudeSignInState(claude) == false { connected.remove("claude") }
         }
     }
 
@@ -248,16 +250,25 @@ final class AIModel: ObservableObject {
 
     /// Checks Claude Code's sign-in and remembers the account it reports.
     private func claudeSignedIn(_ provider: AIProvider) async -> Bool {
-        guard let exe = provider.execPath else { return false }
+        await claudeSignInState(provider) == true
+    }
+
+    /// true = signed in, false = Claude Code says it is signed out, nil = could not tell.
+    private func claudeSignInState(_ provider: AIProvider) async -> Bool? {
+        guard let exe = provider.execPath else { return nil }
         var out = ""
         _ = try? await ProcessRunner().run(exe: exe, args: ["auth", "status"],
                                            cwd: PlayerModel.shared.snapshotDir) { out += $0 + "\n" }
-        guard let data = out.data(using: .utf8),
+        // The JSON can come with other lines around it (update notices, warnings).
+        guard let start = out.firstIndex(of: "{"), let end = out.lastIndex(of: "}"), start < end,
+              let data = String(out[start...end]).data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              obj["loggedIn"] as? Bool == true else { return false }
-        accountEmail["claude"] = obj["email"] as? String
-        accountPlan["claude"] = (obj["subscriptionType"] as? String)?.capitalized
-        return true
+              let loggedIn = obj["loggedIn"] as? Bool else { return nil }
+        if loggedIn {
+            accountEmail["claude"] = obj["email"] as? String
+            accountPlan["claude"] = (obj["subscriptionType"] as? String)?.capitalized
+        }
+        return loggedIn
     }
 
     private func connectClaude(_ provider: AIProvider) async -> Bool {
