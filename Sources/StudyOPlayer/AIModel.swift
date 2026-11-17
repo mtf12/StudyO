@@ -65,7 +65,7 @@ final class AIModel: ObservableObject {
     func isConnected(_ p: AIProvider?) -> Bool { p.map { $0.available && connected.contains($0.connectKey) } ?? false }
 
     private init() {
-        NotificationCenter.default.addObserver(forName: .mtMediaOpened, object: nil, queue: .main) { [weak self] _ in
+        NotificationCenter.default.addObserver(forName: .studyoMediaOpened, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.mediaChanged() }
         }
     }
@@ -402,51 +402,84 @@ final class AIModel: ObservableObject {
         let turns = history.filter { !$0.isError && !$0.text.isEmpty }.suffix(6)
             .map { CloudAI.Turn(fromUser: $0.role == .user, text: $0.text) }
         let frame = frameURL.flatMap { try? Data(contentsOf: $0) }
-        let modelKey = Prefs.model(provider.kind)
-        func run(_ model: String) async throws {
-            try await CloudAI.ask(kind: provider.kind, key: key, model: model, system: system,
+        // Every model this key can use, strongest first. A model typed in Settings goes first.
+        var names = provider.kind == .geminiAPI ? await CloudAI.geminiLadder(key: key)
+                                                : await CloudAI.openAILadder(key: key)
+        if names.isEmpty { names = [try await CloudAI.validate(kind: provider.kind, key: key)] }
+        let manual = Prefs.string(Prefs.model(provider.kind)).trimmingCharacters(in: .whitespaces)
+        if !manual.isEmpty { names.removeAll { $0 == manual }; names.insert(manual, at: 0) }
+        let rungs = names.map { ModelRung(id: $0, name: CloudAI.displayName($0)) }
+        try await runLadder(key: provider.connectKey, rungs: rungs, replyID: replyID) { rung in
+            try await CloudAI.ask(kind: provider.kind, key: key, model: rung.id ?? names[0], system: system,
                                   history: Array(turns), question: question, frameJPEG: frame) { [weak self] piece in
                 self?.append(piece, to: replyID)
             }
         }
-        var model = Prefs.string(modelKey)
-        if model.isEmpty {
-            model = try await CloudAI.validate(kind: provider.kind, key: key)
-            UserDefaults.standard.set(model, forKey: modelKey)
+    }
+
+    // MARK: - Model fallback (strongest first)
+
+    /// Models to try for a command-line AI, strongest first.
+    private func cliRungs(_ provider: AIProvider, needsImage: Bool) -> [ModelRung] {
+        switch provider.kind {
+        case .claude:
+            return [ModelRung(id: "fable", name: "Claude Fable"), ModelRung(id: "opus", name: "Claude Opus"),
+                    ModelRung(id: "sonnet", name: "Claude Sonnet"), ModelRung(id: "haiku", name: "Claude Haiku")]
+        case .codex:
+            let listed = CodexModels.ladder(needsImage: needsImage)
+            return listed.isEmpty ? [ModelRung(id: nil, name: provider.name)] : listed
+        default:
+            // Gemini CLI moves between its own models by itself.
+            return [ModelRung(id: nil, name: provider.name)]
         }
-        if provider.kind == .geminiAPI {
-            // Gemini: walk the free models from the strongest down until one answers.
-            // The model that worked is remembered for an hour, then the top is tried again
-            // (free quotas refill).
-            var ladder = await CloudAI.geminiLadder(key: key)
-            let checkedKey = modelKey + ".checkedAt"
-            let recent = Date().timeIntervalSince1970 - UserDefaults.standard.double(forKey: checkedKey) < 3600
-            if recent, let i = ladder.firstIndex(of: model) { ladder = Array(ladder[i...]) }
-            if ladder.isEmpty { ladder = [model] }
-            var lastFailure: Error = AIError(L("No answer came back."))
-            for candidate in ladder {
-                do {
-                    try await run(candidate)
-                    if !recent || candidate != model {
-                        UserDefaults.standard.set(candidate, forKey: modelKey)
-                        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: checkedKey)
-                    }
-                    return
-                } catch where !Task.isCancelled && !(error is CancellationError) && replyIsEmpty(replyID) {
-                    lastFailure = error // out of quota, retired, or not answering: step down
+    }
+
+    /// Asks with the strongest model first. When a model cannot answer (no credits, quota used
+    /// up, retired, overloaded…) the next one is tried at once, and a note above the reply says so.
+    /// The model that worked is remembered for an hour, then the strongest is tried again
+    /// (quotas and credits refill).
+    private func runLadder(key: String, rungs: [ModelRung], replyID: UUID,
+                           attempt: (ModelRung) async throws -> Void) async throws {
+        guard !rungs.isEmpty else { throw AIError(L("No answer came back.")) }
+        let stateKey = "aiModelRung." + key
+        let defaults = UserDefaults.standard
+        let fresh = Date().timeIntervalSince1970 - defaults.double(forKey: stateKey + ".at") < 3600
+        var start = 0
+        if fresh, let saved = defaults.string(forKey: stateKey),
+           let i = rungs.firstIndex(where: { ($0.id ?? $0.name) == saved }) { start = i }
+
+        var i = start
+        while true {
+            do {
+                try await attempt(rungs[i])
+                if i == 0 {
+                    defaults.removeObject(forKey: stateKey)
+                } else if i != start || !fresh {
+                    defaults.set(rungs[i].id ?? rungs[i].name, forKey: stateKey)
+                    defaults.set(Date().timeIntervalSince1970, forKey: stateKey + ".at")
                 }
+                return
+            } catch {
+                guard i + 1 < rungs.count, Self.canStepDown(after: error), replyIsEmpty(replyID) else { throw error }
+                let from = rungs[i].name, to = rungs[i + 1].name
+                edit(replyID) {
+                    $0.notice = String(format: L("%@ isn't available right now. Switched to %@."), from, to)
+                    $0.status = L("Thinking…")
+                    $0.isError = false
+                }
+                i += 1
             }
-            throw lastFailure
         }
-        do {
-            try await run(model)
-        } catch let failure as AIError where replyIsEmpty(replyID) {
-            // The saved model may have been retired: pick the current one and try once more.
-            let fresh = try await CloudAI.validate(kind: provider.kind, key: key)
-            guard fresh != model else { throw failure }
-            UserDefaults.standard.set(fresh, forKey: modelKey)
-            try await run(fresh)
-        }
+    }
+
+    /// True for failures another model may not have (credits, quota, rate limit, model gone…).
+    /// Not for Stop, and not for sign-in or key problems, which every model would hit alike.
+    private static func canStepDown(after error: Error) -> Bool {
+        if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return false }
+        let text = error.localizedDescription.lowercased()
+        let signIn = ["not logged in", "please log in", "/login", "invalid api key", "api key not valid",
+                      "incorrect api key", "invalid x-api-key", "unauthorized", "authentication"]
+        return !signIn.contains { text.contains($0) }
     }
 
     // MARK: - Context sent with each question
@@ -502,7 +535,7 @@ final class AIModel: ObservableObject {
 
     /// Security: everything about the video and the conversation goes to the tool through stdin,
     /// never on its command line, where other users of this Mac could read it (`ps`).
-    private func askCLI(_ provider: AIProvider, context: (rules: String, data: String), question: String,
+    private func askCLI(_ provider: AIProvider, model: String?, context: (rules: String, data: String), question: String,
                         history: [ChatMessage], frameURL: URL?, replyID: UUID) async throws {
         guard let exe = provider.execPath else { throw AIError(String(format: L("%@ was not found."), provider.name)) }
         let cwd = PlayerModel.shared.snapshotDir
@@ -527,11 +560,14 @@ final class AIModel: ObservableObject {
                     "--verbose", "--include-partial-messages",
                     "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
                     "--no-session-persistence", "--system-prompt", context.rules]
+            if let model { args += ["--model", model] }
         case .codex:
             // Read-only sandbox, nothing kept on disk, machine-readable output; "-" = prompt on stdin.
             stdin = Data((context.rules + "\n\n" + prompt).utf8)
             args = ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral",
-                    "--color", "never", "--json", "-"]
+                    "--color", "never", "--json"]
+            if let model { args += ["-m", model] }
+            args.append("-")
             if let frameURL { args += ["-i", frameURL.path] } // images go last: the option takes a list
         case .gemini:
             // Gemini CLI puts what arrives on stdin in front of the -p text.
@@ -540,6 +576,7 @@ final class AIModel: ObservableObject {
             var tail = "Answer the user question above."
             if let frameURL { tail += "\nCurrent frame: @\(frameURL.lastPathComponent)" }
             args = ["-p", tail]
+            if let model { args += ["-m", model] }
         case .ollama, .openai, .geminiAPI:
             return
         }
@@ -662,6 +699,34 @@ struct AIError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }
+}
+
+/// The models the signed-in ChatGPT account can use, as Codex lists them (strongest first).
+/// Codex keeps this list up to date itself, so new models appear without an app update.
+enum CodexModels {
+    struct Entry { let slug: String; let name: String; let inAPI: Bool; let image: Bool }
+
+    static func entries() -> [Entry] {
+        let home = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex")
+        guard let data = try? Data(contentsOf: home.appendingPathComponent("models_cache.json")),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = obj["models"] as? [[String: Any]] else { return [] }
+        return models
+            .filter { $0["visibility"] as? String == "list" }
+            .sorted { ($0["priority"] as? Int ?? .max) < ($1["priority"] as? Int ?? .max) }
+            .compactMap { m in
+                guard let slug = m["slug"] as? String else { return nil }
+                let modalities = m["input_modalities"] as? [String]
+                return Entry(slug: slug, name: m["display_name"] as? String ?? slug,
+                             inAPI: m["supported_in_api"] as? Bool ?? false,
+                             image: modalities?.contains("image") ?? true)
+            }
+    }
+
+    static func ladder(needsImage: Bool) -> [ModelRung] {
+        entries().filter { !needsImage || $0.image }.prefix(5).map { ModelRung(id: $0.slug, name: $0.name) }
+    }
 }
 
 /// Settings Gemini CLI reads from its working folder. They switch off the tools that could act

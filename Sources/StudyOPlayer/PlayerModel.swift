@@ -247,7 +247,7 @@ final class PlayerModel: ObservableObject {
         libvlc_media_player_play(mp)
         libvlc_media_player_set_rate(mp, rate)
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
-        NotificationCenter.default.post(name: .mtMediaOpened, object: url)
+        NotificationCenter.default.post(name: .studyoMediaOpened, object: url)
         focusVideo()
     }
 
@@ -544,7 +544,7 @@ final class PlayerModel: ObservableObject {
 }
 
 extension Notification.Name {
-    static let mtMediaOpened = Notification.Name("mtMediaOpened")
+    static let studyoMediaOpened = Notification.Name("studyoMediaOpened")
 }
 
 func formatTime(_ ms: Double) -> String {

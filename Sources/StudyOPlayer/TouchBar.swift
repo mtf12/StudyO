@@ -2,11 +2,11 @@ import AppKit
 import Combine
 
 extension NSTouchBarItem.Identifier {
-    static let mtPlay = NSTouchBarItem.Identifier("com.studyo.player.touchbar.play")
-    static let mtScrub = NSTouchBarItem.Identifier("com.studyo.player.touchbar.scrub")
-    static let mtTime = NSTouchBarItem.Identifier("com.studyo.player.touchbar.time")
-    static let mtWave = NSTouchBarItem.Identifier("com.studyo.player.touchbar.wave")
-    static let mtSpeeds = NSTouchBarItem.Identifier("com.studyo.player.touchbar.speeds")
+    static let studyoPlay = NSTouchBarItem.Identifier("com.studyo.player.touchbar.play")
+    static let studyoScrub = NSTouchBarItem.Identifier("com.studyo.player.touchbar.scrub")
+    static let studyoTime = NSTouchBarItem.Identifier("com.studyo.player.touchbar.time")
+    static let studyoWave = NSTouchBarItem.Identifier("com.studyo.player.touchbar.wave")
+    static let studyoSpeeds = NSTouchBarItem.Identifier("com.studyo.player.touchbar.speeds")
 }
 
 /// Touch Bar: play/pause button, a strip of video frames you can drag on to seek, and the time.
@@ -24,7 +24,7 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
     private(set) lazy var bar: NSTouchBar = {
         let b = NSTouchBar()
         b.delegate = self
-        b.defaultItemIdentifiers = [.mtPlay, .mtScrub, .mtTime, .mtWave]
+        b.defaultItemIdentifiers = [.studyoPlay, .studyoScrub, .studyoTime, .studyoWave]
         return b
     }()
 
@@ -68,7 +68,7 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
     func touchBar(_ touchBar: NSTouchBar, makeItemForIdentifier identifier: NSTouchBarItem.Identifier) -> NSTouchBarItem? {
         dbg("touchbar makeItem \(identifier.rawValue)")
         let player = PlayerModel.shared
-        if identifier == .mtPlay {
+        if identifier == .studyoPlay {
             // Tap: play/pause. Press and hold: the bar expands to show the playback speeds.
             let popover = NSPopoverTouchBarItem(identifier: identifier)
             let button = NSButton(image: Self.symbol(player.isPlaying ? "pause.fill" : "play.fill"),
@@ -83,14 +83,14 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
             popover.showsCloseButton = true
             let speedBar = NSTouchBar()
             speedBar.delegate = self
-            speedBar.defaultItemIdentifiers = [.mtSpeeds]
+            speedBar.defaultItemIdentifiers = [.studyoSpeeds]
             popover.popoverTouchBar = speedBar
             playItem = popover
             return popover
         }
         let item = NSCustomTouchBarItem(identifier: identifier)
         switch identifier {
-        case .mtSpeeds:
+        case .studyoSpeeds:
             let control = NSSegmentedControl(labels: speeds.map { String(format: "%g×", $0) },
                                              trackingMode: .selectOne,
                                              target: self, action: #selector(speedPicked(_:)))
@@ -99,12 +99,12 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
             control.widthAnchor.constraint(equalToConstant: 580).isActive = true
             speedControl = control
             item.view = control
-        case .mtWave:
+        case .studyoWave:
             // The meter itself pushes new heights into this view every frame.
             let view = MeterView(barWidth: 2, insetY: 6)
             view.widthAnchor.constraint(equalToConstant: 28).isActive = true
             item.view = view
-        case .mtScrub:
+        case .studyoScrub:
             let view = ScrubStripView()
             view.thumbs = player.thumbs
             view.onSeek = { fraction in
@@ -113,7 +113,7 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
             }
             strip = view
             item.view = view
-        case .mtTime:
+        case .studyoTime:
             let label = NSTextField(labelWithString: formatTime(player.timeMs))
             label.font = .monospacedDigitSystemFont(ofSize: 14, weight: .regular)
             label.textColor = .secondaryLabelColor

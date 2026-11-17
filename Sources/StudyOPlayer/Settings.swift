@@ -192,8 +192,11 @@ private struct AISettings: View {
                 }
             }
             Section {
-                TextField(L("ChatGPT model"), text: $openaiModel)
-                TextField(L("Gemini model"), text: $geminiModel)
+                TextField(L("ChatGPT model"), text: $openaiModel, prompt: Text(L("Automatic")))
+                TextField(L("Gemini model"), text: $geminiModel, prompt: Text(L("Automatic")))
+            } footer: {
+                Text(L("Each AI starts with its strongest model and moves to the next one by itself when a model is out of credits or quota. Type a model name only to try it first."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 LabeledContent(L("Saved chats")) {

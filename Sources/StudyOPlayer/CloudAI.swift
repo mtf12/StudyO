@@ -99,8 +99,8 @@ enum CloudAI {
             guard status == 200 else { throw AIError(errorMessage(data, status: status)) }
             let ids = ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["data"] as? [[String: Any]] ?? [])
                 .compactMap { $0["id"] as? String }
-            for wanted in ["gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o"] where ids.contains(wanted) { return wanted }
-            return ids.filter { $0.hasPrefix("gpt-") && !$0.contains("audio") && !$0.contains("realtime") }.sorted().last ?? "gpt-4o"
+            // The key works; the model actually used is picked per question (see openAILadder).
+            return ids.first { $0.hasPrefix("gpt-") } ?? "gpt-4o"
         } else {
             let (data, response) = try await session.data(for: request(
                 "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", kind: kind, key: key))
@@ -146,6 +146,52 @@ enum CloudAI {
         let models = Array(ranked.map(\.name).prefix(8))
         geminiListCache = (key.hashValue, Date(), models)
         return models
+    }
+
+    @MainActor private static var openAIListCache: (keyHash: Int, at: Date, models: [String])?
+
+    /// The ChatGPT models this key can use, strongest first (up to 6). Ranked by OpenAI's own
+    /// order when Codex's model list is on this Mac, otherwise by version number, with the
+    /// smaller "mini" and "nano" models last.
+    @MainActor static func openAILadder(key: String) async -> [String] {
+        if let cached = openAIListCache, cached.keyHash == key.hashValue,
+           Date().timeIntervalSince(cached.at) < 3600, !cached.models.isEmpty {
+            return cached.models
+        }
+        guard let req = try? request("https://api.openai.com/v1/models", kind: .openai, key: key),
+              let (data, response) = try? await session.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+        let ids = Set(((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["data"] as? [[String: Any]] ?? [])
+            .compactMap { $0["id"] as? String })
+        let skip = ["audio", "realtime", "tts", "transcribe", "image", "search", "embedding", "instruct", "moderation"]
+        // OpenAI's order, for the models it marks as available in the API.
+        var ranked = CodexModels.entries().filter { $0.inAPI && ids.contains($0.slug) }.map(\.slug)
+        // Then any other chat model, newest version first.
+        func version(_ id: String) -> Double {
+            Double(id.dropFirst(4).prefix { $0.isNumber || $0 == "." }) ?? 0
+        }
+        func size(_ id: String) -> Int { id.contains("nano") ? 2 : (id.contains("mini") ? 1 : 0) }
+        let others = ids.filter { id in
+            id.hasPrefix("gpt-") && !ranked.contains(id) && !skip.contains { id.contains($0) }
+                && id.range(of: #"-20\d\d-"#, options: .regularExpression) == nil // dated snapshots
+        }.sorted {
+            (size($0), -version($0), $0.count, $0) < (size($1), -version($1), $1.count, $1)
+        }
+        ranked += others
+        let models = Array(ranked.prefix(6))
+        openAIListCache = (key.hashValue, Date(), models)
+        return models
+    }
+
+    /// A readable model name for notes in the chat: "gemini-3.8-flash-lite" → "Gemini 3.8 Flash Lite".
+    static func displayName(_ id: String) -> String {
+        if let entry = CodexModels.entries().first(where: { $0.slug == id }) { return entry.name }
+        let words = id.split(separator: "-").map(String.init)
+        guard let first = words.first else { return id }
+        if first.lowercased() == "gpt", words.count > 1 {
+            return (["GPT-" + words[1]] + words.dropFirst(2).map { $0.capitalized }).joined(separator: " ")
+        }
+        return words.map { $0.first?.isNumber == true ? $0 : $0.capitalized }.joined(separator: " ")
     }
 
     /// Picks the newest general "flash" model by its version number, so the choice keeps up

@@ -561,26 +561,40 @@ struct MessageRow: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.leading, 40)
         } else {
-            VStack(alignment: .leading, spacing: 0) {
-                if message.status != nil && message.text.isEmpty {
-                    TypingDots()
-                } else {
-                    Text(rendered(message.text))
-                        .font(.system(size: 13.5))
-                        .textSelection(.enabled)
-                        .foregroundStyle(message.isError ? Color.red.opacity(0.9) : Color.primary)
-                        .lineSpacing(3)
-                        .multilineTextAlignment(.leading)
+            VStack(alignment: .leading, spacing: 5) {
+                if let notice = message.notice {
+                    Label(notice, systemImage: "arrow.triangle.swap")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, BubbleShape.tail + 2)
+                        .transition(.opacity)
                 }
+                reply
             }
-            .padding(.vertical, 8)
-            .padding(.trailing, 13)
-            .padding(.leading, 13 + BubbleShape.tail)
-            .background(BubbleShape(tailOnTrailing: false).fill(Theme.replyBubble)
-                .flipsForRightToLeftLayoutDirection(true))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, 24)
         }
+    }
+
+    private var reply: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if message.status != nil && message.text.isEmpty {
+                TypingDots()
+            } else {
+                Text(rendered(message.text))
+                    .font(.system(size: 13.5))
+                    .textSelection(.enabled)
+                    .foregroundStyle(message.isError ? Color.red.opacity(0.9) : Color.primary)
+                    .lineSpacing(3)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.trailing, 13)
+        .padding(.leading, 13 + BubbleShape.tail)
+        .background(BubbleShape(tailOnTrailing: false).fill(Theme.replyBubble)
+            .flipsForRightToLeftLayoutDirection(true))
     }
 
     /// Renders bold/italic/code from the answer. Security: links are removed so an answer can

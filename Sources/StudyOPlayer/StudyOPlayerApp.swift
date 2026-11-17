@@ -345,7 +345,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ai.send(question)
             try? await Task.sleep(nanoseconds: 500_000_000)
             while ai.busy { try? await Task.sleep(nanoseconds: 300_000_000) }
-            for m in ai.messages { print(m.role == .user ? "USER:" : "AI:", m.isError ? "(error)" : "", m.text) }
+            for m in ai.messages {
+                if let notice = m.notice { print("NOTICE:", notice) }
+                print(m.role == .user ? "USER:" : "AI:", m.isError ? "(error)" : "", m.text)
+            }
             print("saved chats after answer:", ai.sessions.count)
             print("frames left on disk:", (try? FileManager.default.contentsOfDirectory(atPath: player.snapshotDir.path))?.count ?? -1)
             if let out = env["STUDYO_SELFTEST_SHOT"] {
