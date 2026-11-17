@@ -5,9 +5,9 @@ import UniformTypeIdentifiers
 // MARK: - Look and feel
 
 enum Theme {
-    /// The app's colour: a warm red, used for the few coloured elements.
-    static let accent = Color(red: 0.95, green: 0.27, blue: 0.33)
-    static let accentSoft = Color(red: 0.99, green: 0.45, blue: 0.37)
+    /// The app's colour: the glowing blue of the app icon, used for the few coloured elements.
+    static let accent = Color(red: 0.19, green: 0.46, blue: 0.85)
+    static let accentSoft = Color(red: 0.33, green: 0.62, blue: 0.92)
     static let accentGradient = LinearGradient(colors: [accent, accentSoft], startPoint: .topLeading, endPoint: .bottomTrailing)
     // These follow light and dark appearance.
     /// Your own chat bubbles.
@@ -121,7 +121,7 @@ struct ContentView: View {
         }
         // The window layout never mirrors: the assistant stays on the chosen side in Arabic too.
         .environment(\.layoutDirection, .leftToRight)
-        .background(Color.black)
+        .background(player.hasMedia ? Color.black : Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea()
         .animation(Theme.spring, value: sidebarVisible)
         .animation(Theme.spring, value: aiSide)
@@ -177,8 +177,11 @@ struct ResizeHandle: NSViewRepresentable {
 }
 
 struct VideoSurface: NSViewRepresentable {
+    /// False on the welcome screen, so its black background does not cover the light/dark window colour.
+    /// The view stays in place (only transparent) so it keeps keyboard focus and the Touch Bar.
+    var visible = true
     func makeNSView(context: Context) -> VideoHostView { PlayerModel.shared.videoView }
-    func updateNSView(_ nsView: VideoHostView, context: Context) {}
+    func updateNSView(_ nsView: VideoHostView, context: Context) { nsView.alphaValue = visible ? 1 : 0 }
 }
 
 // MARK: - Video area with floating controls
@@ -189,6 +192,8 @@ struct PlayerStage: View {
     let dropTargeted: Bool
     @AppStorage("showAI") private var showAI = true
     @AppStorage("aiSide") private var aiSide = "right"
+    /// The app's light/dark mode, read before this view forces dark over a video.
+    @Environment(\.colorScheme) private var systemScheme
 
     /// Leaves room for the window buttons when the video reaches the window's top-left corner.
     private var titleInset: CGFloat {
@@ -199,8 +204,10 @@ struct PlayerStage: View {
 
     var body: some View {
         ZStack {
-            Color.black
-            VideoSurface()
+            // Black behind a video; the normal window colour (light or dark) on the welcome screen.
+            (player.hasMedia ? Color.black : Color(nsColor: .windowBackgroundColor))
+                .animation(.easeOut(duration: 0.25), value: player.hasMedia)
+            VideoSurface(visible: player.hasMedia)
             // A click only moves focus to the video. Pausing is Space or the play button.
             Color.clear
                 .contentShape(Rectangle())
@@ -231,7 +238,8 @@ struct PlayerStage: View {
                     } label: {
                         Image(systemName: "sparkles")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(showAI ? AnyShapeStyle(Theme.accentGradient) : AnyShapeStyle(Color.white))
+                            .foregroundStyle(showAI ? AnyShapeStyle(Theme.accentGradient)
+                                             : player.hasMedia ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.primary))
                             .frame(width: 34, height: 34)
                             .glassPanel(cornerRadius: 17)
                             .contentShape(Circle())
@@ -244,7 +252,9 @@ struct PlayerStage: View {
                 .padding(.trailing, 14)
                 .padding(.top, 9)
                 .padding(.bottom, 24)
+                // The shade keeps the title readable over a video; nothing to shade on the welcome screen.
                 .background(LinearGradient(colors: [.black.opacity(0.55), .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+                    .opacity(player.hasMedia ? 1 : 0)
                     .allowsHitTesting(false))
                 Spacer(minLength: 0)
                 if player.hasMedia {
@@ -274,7 +284,8 @@ struct PlayerStage: View {
                     .transition(.opacity)
             }
         }
-        .environment(\.colorScheme, .dark) // the video area is always dark, whatever the app appearance
+        // Dark over a video, whatever the app appearance; the welcome screen follows light/dark mode.
+        .environment(\.colorScheme, player.hasMedia ? .dark : systemScheme)
         .animation(Theme.spring, value: player.hasMedia)
         .animation(.easeOut(duration: 0.2), value: dropTargeted)
         .animation(Theme.spring, value: player.errorText)
@@ -301,6 +312,8 @@ struct FlashIndicator: View {
 }
 
 struct EmptyState: View {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     @EnvironmentObject var player: PlayerModel
     let dropTargeted: Bool
 
@@ -313,17 +326,25 @@ struct EmptyState: View {
                                          center: .center, startRadius: 10, endRadius: 150))
                     .frame(width: 300, height: 300)
                     .frame(width: 120, height: 120) // the glow spills out without pushing the text away
-                    .phaseAnimator([false, true]) { view, on in
-                        view.scaleEffect(on ? 1.15 : 0.9).opacity(on ? 0.9 : 0.5)
-                    } animation: { _ in .easeInOut(duration: 2.6) }
-                Image(systemName: dropTargeted ? "arrow.down.circle.fill" : "play.fill")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 88, height: 88)
-                    .background(Theme.accentGradient, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .shadow(color: Theme.accent.opacity(0.45), radius: 22, y: 10)
-                    .scaleEffect(dropTargeted ? 1.08 : 1)
+                    // A still glow: an endless pulse would redraw the window every frame while idle.
+                    .opacity(0.75)
+                Group {
+                    if dropTargeted {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 34, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 88, height: 88)
+                            .background(Theme.accentGradient, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    } else {
+                        // The app icon itself, so the welcome screen carries the brand.
+                        Image(nsImage: NSApp.applicationIconImage)
+                            .resizable().interpolation(.high)
+                            .frame(width: 112, height: 112)
+                    }
+                }
+                .shadow(color: Theme.accent.opacity(0.45), radius: 22, y: 10)
+                .scaleEffect(dropTargeted ? 1.08 : 1)
+                .animation(Theme.spring, value: dropTargeted)
             }
             VStack(spacing: 6) {
                 Text("StudyO Player").font(.system(size: 28, weight: .bold, design: .rounded))

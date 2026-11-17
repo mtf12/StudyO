@@ -29,7 +29,7 @@ enum Prefs {
         ])
     }
 
-    /// "system", "light" or "dark". The video area itself always stays dark.
+    /// "system", "light" or "dark". The video area stays dark only while a video plays.
     static let appearance = "appearance"
     static func applyAppearance() {
         switch string(appearance) {
@@ -99,6 +99,8 @@ private struct GeneralSettings: View {
 }
 
 private struct PlaybackSettings: View {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     @AppStorage(Prefs.autoPlay) private var autoPlay = true
     @AppStorage(Prefs.loop) private var loop = false
     @AppStorage(Prefs.seekStep) private var seekStep = 5.0
@@ -130,6 +132,8 @@ private struct PlaybackSettings: View {
 }
 
 private struct SubtitleSettings: View {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     @AppStorage(Prefs.subAutoload) private var autoload = true
     @AppStorage(Prefs.subScale) private var scale = 100
 
@@ -155,6 +159,8 @@ private struct SubtitleSettings: View {
 }
 
 private struct AISettings: View {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     @EnvironmentObject var ai: AIModel
     @AppStorage(Prefs.aiSendFrame) private var sendFrame = true
     @AppStorage(Prefs.aiSendSubs) private var sendSubs = true
@@ -212,6 +218,8 @@ private struct AISettings: View {
 }
 
 private struct ShortcutSettings: View {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     private let rows: [(String, String)] = [
         ("Space", "Play / Pause"), ("← →", "Skip back / forward"), ("↑ ↓", "Volume"),
         ("F", "Full Screen"), ("M", "Mute"), ("⌘O", "Open a video"), ("⌘B", "Show or hide the assistant"),

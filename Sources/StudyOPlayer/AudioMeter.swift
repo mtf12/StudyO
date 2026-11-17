@@ -62,6 +62,9 @@ final class AudioMeter: NSObject {
         l.isPaused = true
         l.add(to: .main, forMode: .common)
         link = l
+        // A window coming back into view (unhidden, uncovered) may need the bars again.
+        NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification,
+                                               object: nil, queue: .main) { [weak self] _ in self?.wake() }
         wake()
     }
 
@@ -83,6 +86,13 @@ final class AudioMeter: NSObject {
         lastStep = now
 
         let player = PlayerModel.shared
+        // Nobody can see the bars (no Touch Bar, and the window minimised, hidden or fully covered):
+        // stop every frame of work until the window shows again (see wake()).
+        guard views.allObjects.contains(where: \.isShowing) else {
+            for i in 0..<Self.barCount { bars[i] = 0; velocity[i] = 0 }
+            link.isPaused = true
+            return
+        }
         let live = player.isPlaying && !player.muted
         record(time: now, level: live ? player.audioLevel() : 0)
 
@@ -148,8 +158,8 @@ final class AudioMeter: NSObject {
 
     /// Colour of a bar by its position.
     static func color(at position: CGFloat) -> NSColor {
-        // Soft, low-contrast tones: misty blue to lavender.
-        let stops: [(CGFloat, CGFloat, CGFloat)] = [(0.55, 0.70, 0.90), (0.66, 0.68, 0.92), (0.78, 0.70, 0.90)]
+        // Soft tones from the app icon: glowing blue to icy white-blue.
+        let stops: [(CGFloat, CGFloat, CGFloat)] = [(0.33, 0.62, 0.92), (0.55, 0.76, 0.94), (0.78, 0.89, 0.98)]
         let p = min(max(position, 0), 1) * CGFloat(stops.count - 1)
         let i = min(Int(p), stops.count - 2)
         let f = p - CGFloat(i)
@@ -163,12 +173,15 @@ final class AudioMeter: NSObject {
 final class MeterView: NSView {
     private let barWidth: CGFloat
     private let insetY: CGFloat
+    /// The Touch Bar copy. Its window never reports itself as visible, so it is always counted as shown.
+    private let onTouchBar: Bool
     private var barLayers: [CALayer] = []
     private var current: [CGFloat] = Array(repeating: 0, count: AudioMeter.barCount)
 
-    init(barWidth: CGFloat = 2, insetY: CGFloat = 0) {
+    init(barWidth: CGFloat = 2, insetY: CGFloat = 0, onTouchBar: Bool = false) {
         self.barWidth = barWidth
         self.insetY = insetY
+        self.onTouchBar = onTouchBar
         super.init(frame: .zero)
         wantsLayer = true
         for i in 0..<AudioMeter.barCount {
@@ -183,6 +196,14 @@ final class MeterView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var intrinsicContentSize: NSSize { NSSize(width: 32, height: 30) }
+
+    /// True when someone can actually see these bars right now.
+    /// The on-screen bars keep moving while the controls are faded out, so they are already live
+    /// the moment the controls come back; they only rest while the whole window is out of sight.
+    var isShowing: Bool {
+        guard let window else { return false }
+        return onTouchBar || window.occlusionState.contains(.visible)
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

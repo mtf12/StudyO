@@ -9,6 +9,8 @@ struct StudyOPlayerApp: App {
     @AppStorage("showAI") private var showAI = true
     @AppStorage("aiSide") private var aiSide = "right"
     @AppStorage(Prefs.appearance) private var appearance = "system"
+    /// False until the welcome tour has been finished or skipped once.
+    @AppStorage("onboardingDone") private var onboardingDone = false
 
     init() {
         // Every launch starts with the chat panel open, whatever it was when the app last quit.
@@ -22,6 +24,10 @@ struct StudyOPlayerApp: App {
                 .environmentObject(AIModel.shared)
                 .environmentObject(lang)
                 .frame(minWidth: 1040, minHeight: 560)
+                .sheet(isPresented: Binding(get: { !onboardingDone }, set: { onboardingDone = !$0 })) {
+                    OnboardingView { onboardingDone = true }
+                        .environmentObject(lang)
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultPosition(.center)
@@ -31,6 +37,8 @@ struct StudyOPlayerApp: App {
                 Button(L("About StudyO Player")) { AboutPanel.show() }
             }
             CommandGroup(replacing: .help) {
+                Button(L("Welcome Tour")) { onboardingDone = false }
+                Divider()
                 Button(L("Contact Support…")) { AppInfo.contactSupport() }
                     .disabled(AppInfo.supportEmail.isEmpty)
             }

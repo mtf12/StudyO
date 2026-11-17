@@ -21,6 +21,10 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
     private var speedControl: NSSegmentedControl?
     private let speeds: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3]
 
+    /// True only while the frame strip is on a real Touch Bar. Most Apple silicon Macs have none,
+    /// and then the preview frames are never made (that would decode the video a second time).
+    var stripVisible: Bool { strip?.window != nil }
+
     private(set) lazy var bar: NSTouchBar = {
         let b = NSTouchBar()
         b.delegate = self
@@ -101,7 +105,7 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
             item.view = control
         case .studyoWave:
             // The meter itself pushes new heights into this view every frame.
-            let view = MeterView(barWidth: 2, insetY: 6)
+            let view = MeterView(barWidth: 2, insetY: 6, onTouchBar: true)
             view.widthAnchor.constraint(equalToConstant: 28).isActive = true
             item.view = view
         case .studyoScrub:
@@ -148,6 +152,8 @@ final class ScrubStripView: NSView {
     }()
 
     private var barObserver: NSObjectProtocol?
+
+    deinit { if let barObserver { NotificationCenter.default.removeObserver(barObserver) } }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

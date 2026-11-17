@@ -29,9 +29,16 @@ C="$APP/Contents"
 rm -rf "$APP"
 mkdir -p "$C/MacOS" "$C/Resources" "$C/Frameworks"
 
+# StudyO runs on Apple silicon Macs only (M1 and later). The video engine copied from VLC.app
+# must therefore contain arm64 code, or the app would fail to start.
+if ! lipo -archs "$VLC/lib/libvlc.dylib" | grep -qw arm64; then
+  echo "The installed VLC.app has no Apple silicon (arm64) engine. Install the Apple silicon or Universal VLC 3.x." >&2
+  exit 1
+fi
+
 echo "Compiling…"
 swiftc -O -swift-version 5 -parse-as-library ${FLAGS[@]+"${FLAGS[@]}"} \
-  -target "$(uname -m)-apple-macos14.0" \
+  -target "arm64-apple-macos14.0" \
   -import-objc-header Sources/CVLC/vlc_min.h \
   Sources/StudyOPlayer/*.swift \
   -L "$VLC/lib" -lvlc -lvlccore \
@@ -40,6 +47,10 @@ swiftc -O -swift-version 5 -parse-as-library ${FLAGS[@]+"${FLAGS[@]}"} \
 
 echo "Bundling the video engine…"
 cp -R "$VLC/lib" "$VLC/plugins" "$C/Frameworks/"
+# A Universal VLC carries Intel code too; strip it, since the app is Apple silicon only.
+for f in "$C/Frameworks/lib"/*.dylib "$C/Frameworks/plugins"/*.dylib; do
+  if lipo -archs "$f" 2>/dev/null | grep -qw x86_64; then lipo "$f" -thin arm64 -output "$f"; fi
+done
 cp Resources/Info.plist "$C/Info.plist"
 
 # Security: StudyO Player only plays local files, so every engine module that talks to the network,
@@ -58,7 +69,19 @@ for name in "${REMOVE[@]}"; do rm -f "$P"/lib${name}_plugin.dylib; done
 rm -f "$P"/*.jar "$P"/plugins.dat
 echo "Engine modules kept: $(ls "$P" | wc -l | tr -d ' ')"
 
-if [ ! -f Resources/AppIcon.icns ]; then
+# Resources/icon.png is the icon artwork; the .icns is rebuilt whenever that image changes.
+if [ -f Resources/icon.png ] && { [ ! -f Resources/AppIcon.icns ] || [ Resources/icon.png -nt Resources/AppIcon.icns ]; }; then
+  echo "Making the icon from Resources/icon.png…"
+  TMP="$(mktemp -d)"
+  swift scripts/icon_from_image.swift Resources/icon.png "$TMP/icon.png"
+  mkdir "$TMP/AppIcon.iconset"
+  for s in 16 32 128 256 512; do
+    sips -z $s $s "$TMP/icon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s*2)) $((s*2)) "$TMP/icon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$TMP/AppIcon.iconset" -o Resources/AppIcon.icns
+  rm -rf "$TMP"
+elif [ ! -f Resources/AppIcon.icns ]; then
   echo "Making the icon…"
   TMP="$(mktemp -d)"
   swift scripts/make_icon.swift "$TMP/icon.png"

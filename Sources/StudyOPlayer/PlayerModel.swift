@@ -84,7 +84,9 @@ final class PlayerModel: ObservableObject {
     private var pauseOnStart = false
     private let thumbnailer = ThumbnailGenerator()
     private var thumbsRequested = false
-    static let thumbCount = 12
+    /// Set when Apple's decoder cannot read the open file, so the libVLC frame maker is used.
+    private var fastThumbsFailed = false
+    static let thumbCount = 70
     let snapshotDir: URL
 
     private init() {
@@ -99,6 +101,7 @@ final class PlayerModel: ObservableObject {
         rate = Float(Prefs.double(Prefs.defaultRate))
         setupVLC()
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.tick() }
+        timer?.tolerance = 0.05 // lets macOS group wake-ups with other work, which saves energy
         RunLoop.main.add(timer!, forMode: .common)
     }
 
@@ -130,7 +133,9 @@ final class PlayerModel: ObservableObject {
         // No network lookups, no interactive prompts: this is a local-file player.
         // --no-osd: the engine never draws its own text (file paths, status) over the picture.
         var args = ["--no-video-title-show", "--quiet", "--snapshot-format=jpg", "--no-snapshot-preview",
-                    "--no-metadata-network-access", "--no-interact", "--no-osd"]
+                    "--no-metadata-network-access", "--no-interact", "--no-osd",
+                    // No per-frame playback statistics (nothing reads them).
+                    "--no-stats"]
         #if SELFTEST
         if ProcessInfo.processInfo.environment["STUDYO_VLC_VERBOSE"] != nil {
             args.removeAll { $0 == "--quiet" }
@@ -236,6 +241,7 @@ final class PlayerModel: ObservableObject {
         title = url.lastPathComponent
         thumbs = []
         thumbsRequested = false
+        fastThumbsFailed = false
         thumbnailer.cancel()
         hasMedia = true
         ended = false
@@ -246,6 +252,7 @@ final class PlayerModel: ObservableObject {
         audioTracks = []
         libvlc_media_player_play(mp)
         libvlc_media_player_set_rate(mp, rate)
+        startThumbnailsIfNeeded() // starts as the file opens, not when playback begins
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         NotificationCenter.default.post(name: .studyoMediaOpened, object: url)
         focusVideo()
@@ -488,10 +495,8 @@ final class PlayerModel: ObservableObject {
             let t = Double(libvlc_media_player_get_time(mp))
             if t >= 0 && abs(t - timeMs) > 100 { timeMs = t }
         }
-        if tickCount % 8 == 0 {
-            refreshTracks()
-            if state == 3 { startThumbnailsIfNeeded() }
-        }
+        if tickCount % 8 == 0 { refreshTracks() }
+        if !thumbsRequested { startThumbnailsIfNeeded() } // e.g. the Touch Bar has just appeared
 
         // Controls fade away while the video plays and the pointer rests; any movement brings them back.
         if isPlaying && controlsVisible && !hoveringControls && Date().timeIntervalSince(lastMouseMove) > 2.5 {
@@ -505,17 +510,32 @@ final class PlayerModel: ObservableObject {
         if let window = videoView.window, window.level != level, !isFullscreen { window.level = level }
     }
 
+    /// Fills the Touch Bar strip: Apple's hardware decoder first (MP4/MOV, under a second), and
+    /// libVLC for every other format once the video size is known. Nothing is saved to disk.
     private func startThumbnailsIfNeeded() {
-        guard let mp, let instance, let url = currentURL, !thumbsRequested else { return }
+        // Only for a Touch Bar that is actually showing; tick() tries again if one appears later.
+        guard let url = currentURL, !thumbsRequested, TouchBarController.shared.stripVisible else { return }
+        let deliver: (Int, CGImage) -> Void = { [weak self] index, image in
+            guard let self, self.currentURL == url, index < self.thumbs.count else { return }
+            self.thumbs[index] = image
+        }
+        if !fastThumbsFailed {
+            thumbsRequested = true
+            thumbs = Array(repeating: nil, count: Self.thumbCount)
+            thumbnailer.startFast(url: url, count: Self.thumbCount, deliver: deliver) { [weak self] in
+                guard let self, self.currentURL == url else { return }
+                self.fastThumbsFailed = true
+                self.thumbsRequested = false // the libVLC path takes over on the next tick
+            }
+            return
+        }
+        guard let mp, let instance else { return }
         var w: UInt32 = 0, h: UInt32 = 0
         guard libvlc_video_get_size(mp, 0, &w, &h) == 0, w > 0, h > 0 else { return } // audio only, or not ready
         thumbsRequested = true
         thumbs = Array(repeating: nil, count: Self.thumbCount)
         thumbnailer.start(instance: instance, url: url, aspect: Double(w) / Double(h),
-                          count: Self.thumbCount) { [weak self] index, image in
-            guard let self, self.currentURL == url, index < self.thumbs.count else { return }
-            self.thumbs[index] = image
-        }
+                          count: Self.thumbCount, deliver: deliver)
     }
 
     private func refreshTracks() {

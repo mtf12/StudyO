@@ -7,6 +7,8 @@ struct AISidebar: View {
     @EnvironmentObject var player: PlayerModel
     @EnvironmentObject var lang: Lang
     @FocusState private var inputFocused: Bool
+    /// The first-launch note about which AI apps must be installed; hidden for good once dismissed.
+    @AppStorage("aiSetupNoticeDismissed") private var setupNoticeDismissed = false
     /// Extra space at the top so the header clears the window's close/minimise buttons.
     var topInset: CGFloat = 16
 
@@ -18,10 +20,25 @@ struct AISidebar: View {
 
     private var connected: Bool { ai.isConnected(ai.selected) }
 
+    /// True when an AI app is installed on this Mac (Ollama counts even when it isn't running).
+    private var hasLocalAI: Bool {
+        ai.providers.contains { $0.execPath != nil || $0.kind == .ollama }
+    }
+
+    /// The setup note shows only once the search has run and found no AI app on this Mac,
+    /// and not while the user is already chatting (e.g. with an API key) or has dismissed it.
+    private var showSetupNotice: Bool {
+        !setupNoticeDismissed && !ai.showHistory && !connected
+            && !ai.providers.isEmpty && !hasLocalAI
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().opacity(0.5)
+            if showSetupNotice {
+                setupNotice.transition(.move(edge: .top).combined(with: .opacity))
+            }
             Group {
                 if ai.showHistory {
                     HistoryList().transition(.opacity)
@@ -36,11 +53,13 @@ struct AISidebar: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             if connected && !ai.showHistory { inputBar.transition(.move(edge: .bottom).combined(with: .opacity)) }
         }
-        .background(VisualEffect(material: .sidebar).ignoresSafeArea())
+        // Same colour as the video area on the welcome screen, in light and dark mode.
+        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .environment(\.layoutDirection, lang.direction)
         .animation(Theme.spring, value: connected)
         .animation(Theme.spring, value: ai.selectedID)
         .animation(Theme.spring, value: ai.showHistory)
+        .animation(Theme.spring, value: setupNoticeDismissed)
         .task { await ai.detect() }
     }
 
@@ -121,6 +140,29 @@ struct AISidebar: View {
     }
 
     // MARK: States
+
+    /// Tells a new user the instructor needs an AI app on this Mac (or an API key).
+    private var setupNotice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle.fill").foregroundStyle(Theme.accent)
+                Text(L("Before you start")).font(.system(size: 13, weight: .semibold))
+            }
+            Text(L("To chat, install one of these on this Mac: Claude Code, the ChatGPT app, Gemini CLI or Ollama. Then press refresh. You can also use ChatGPT or Gemini with your own API key."))
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button(L("Got it")) { setupNoticeDismissed = true }
+                    .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(Theme.fill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+    }
 
     private var unavailable: some View {
         VStack(spacing: 14) {
@@ -316,6 +358,8 @@ struct ProviderGlyph: View {
 
 /// Shown until the selected AI is connected: one clear action, nothing else.
 struct ConnectScreen: View {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     @EnvironmentObject var ai: AIModel
     let provider: AIProvider
 
@@ -424,6 +468,8 @@ struct ConnectScreen: View {
 // MARK: - Previous chats
 
 struct HistoryList: View {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     @EnvironmentObject var ai: AIModel
     @EnvironmentObject var player: PlayerModel
 
@@ -532,6 +578,8 @@ struct TypingDots: View {
 /// Depends on its message only (not on the player, which changes several times a second), and is
 /// Equatable, so while an answer streams in only the bubble being written is redrawn.
 struct MessageRow: View, Equatable {
+    /// Redraws this view when the app language changes.
+    @ObservedObject private var lang = Lang.shared
     let message: ChatMessage
 
     static func == (a: MessageRow, b: MessageRow) -> Bool { a.message == b.message }

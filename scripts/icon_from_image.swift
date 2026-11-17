@@ -18,7 +18,7 @@ let shape = NSBezierPath(roundedRect: tile, xRadius: 186, yRadius: 186)
 
 ctx.saveGState()
 ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: NSColor(white: 0, alpha: 0.35).cgColor)
-NSColor(red: 0.80, green: 0.10, blue: 0.14, alpha: 1).setFill()
+NSColor(red: 0.04, green: 0.13, blue: 0.27, alpha: 1).setFill() // the icon's navy, behind any transparent edge
 shape.fill()
 ctx.restoreGState()
 

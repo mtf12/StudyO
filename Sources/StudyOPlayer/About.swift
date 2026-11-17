@@ -39,11 +39,10 @@ struct AboutView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 34) {
+        HStack(alignment: .center, spacing: 34) { // icon centred on the text, so neither end looks heavier
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable().interpolation(.high)
                 .frame(width: 172, height: 172)
-                .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 7) {
@@ -55,7 +54,6 @@ struct AboutView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
-                .padding(.top, 10)
                 
                 Text("StudyO Player")
                     .font(.system(size: 28, weight: .regular))
@@ -66,7 +64,7 @@ struct AboutView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 8)
 
-                Spacer(minLength: 20)
+                Spacer().frame(height: 22)
 
                 // تنسيق حقوق الملكية على الشمال تماماً وتحت بعض (زي تصميم أبل بالضبط)
                 VStack(alignment: .leading, spacing: 4) {
@@ -91,9 +89,12 @@ struct AboutView: View {
         }
         .padding(.leading, 40)
         .padding(.trailing, 26)
-        .padding(.top, 30)
-        .padding(.bottom, 24)
-        .frame(width: 600, height: 300)
+        // The title bar already adds about 28 pt above the content, so the top padding is smaller
+        // than the bottom one: the space above and below the content then looks the same.
+        .padding(.top, 8)
+        .padding(.bottom, 34)
+        .frame(width: 600)
+        .fixedSize(horizontal: false, vertical: true) // as tall as the content, no empty gap
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .environment(\.layoutDirection, lang.direction)
     }
