@@ -121,6 +121,8 @@ struct ContentView: View {
         }
         // The window layout never mirrors: the assistant stays on the chosen side in Arabic too.
         .environment(\.layoutDirection, .leftToRight)
+        // Asked once, after the welcome tour: open videos with StudyO by default?
+        .overlay(alignment: .top) { DefaultPlayerPrompt() }
         .background(player.hasMedia ? Color.black : Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea()
         .animation(Theme.spring, value: sidebarVisible)

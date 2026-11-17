@@ -211,4 +211,12 @@ private let arabic: [String: String] = [
     "Space plays and pauses, the arrow keys skip back and forward, F goes full screen.": "زر المسافة للتشغيل والإيقاف، والأسهم للرجوع والتقديم، وحرف F لملء الشاشة.",
     "Language, panel side and playback options are in Settings (⌘,).": "اللغة وموضع اللوحة وخيارات التشغيل موجودة في الإعدادات (⌘,).",
     "See this tour again any time from the Help menu.": "يمكنك مشاهدة هذه الجولة مرة أخرى في أي وقت من قائمة المساعدة.",
+    "Open videos with StudyO by default?": "تفتح الفيديوهات بـ StudyO على طول؟",
+    "Not Now": "مش دلوقتي",
+    "Make Default": "اجعله الافتراضي",
+    "StudyO now opens your videos.": "StudyO بقى هو اللي بيفتح فيديوهاتك.",
+    "Some formats could not be changed. Try again from Settings.": "بعض الصيغ ماتغيّرتش. جرّب تاني من الإعدادات.",
+    "Default video player": "مشغّل الفيديو الافتراضي",
+    "StudyO": "StudyO",
+    "Confirm each format in the macOS window (%d of %d)": "أكّد كل صيغة في نافذة macOS (%d من %d)",
 ]

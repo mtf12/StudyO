@@ -93,6 +93,7 @@ private struct GeneralSettings: View {
                 Toggle(L("Keep the window on top while playing"), isOn: $keepOnTop)
                 Toggle(L("Continue each video where I stopped"), isOn: $resume)
             }
+            Section { DefaultPlayerRow() }
         }
         .formStyle(.grouped)
     }
