@@ -3,17 +3,26 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VLC="/Applications/VLC.app/Contents/MacOS"
-if [ ! -d "$VLC/lib" ]; then
-  echo "VLC.app is needed for the video engine. Install it:  brew install --cask vlc" >&2
-  exit 1
+# The video engine (libVLC 3) lives in Engine/vlc inside the project, so VLC.app is not needed
+# to build. If that folder is missing, it is filled once from an installed VLC.app.
+ENGINE="Engine/vlc"
+VLC_APP="/Applications/VLC.app"
+if [ ! -d "$ENGINE/lib" ]; then
+  if [ ! -d "$VLC_APP/Contents/MacOS/lib" ]; then
+    echo "The video engine is missing (Engine/vlc). Install VLC 3.x once so it can be copied:  brew install --cask vlc" >&2
+    exit 1
+  fi
+  echo "Copying the video engine from VLC.app into $ENGINE (one time)…"
+  mkdir -p "$ENGINE"
+  cp -R "$VLC_APP/Contents/MacOS/lib" "$VLC_APP/Contents/MacOS/plugins" "$ENGINE/"
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VLC_APP/Contents/Info.plist" > "$ENGINE/VERSION" 2>/dev/null || echo unknown > "$ENGINE/VERSION"
 fi
 # The app reads a few libVLC 3 internals (live audio level), and VLC 4 removed APIs it uses.
 # Bundle only an engine of the series it was written for.
-VLC_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VLC.app/Contents/Info.plist 2>/dev/null || echo unknown)"
+VLC_VERSION="$(cat "$ENGINE/VERSION" 2>/dev/null || echo unknown)"
 case "$VLC_VERSION" in
   3.*) echo "Video engine: VLC $VLC_VERSION" ;;
-  *) echo "StudyO Player needs VLC 3.x for its video engine (found: $VLC_VERSION)." >&2; exit 1 ;;
+  *) echo "StudyO Player needs a VLC 3.x engine (Engine/vlc has: $VLC_VERSION). Delete Engine/vlc and install VLC 3.x." >&2; exit 1 ;;
 esac
 
 # Prefer the full Xcode toolchain when it is installed (falls back to Command Line Tools).
@@ -29,10 +38,10 @@ C="$APP/Contents"
 rm -rf "$APP"
 mkdir -p "$C/MacOS" "$C/Resources" "$C/Frameworks"
 
-# StudyO runs on Apple silicon Macs only (M1 and later). The video engine copied from VLC.app
-# must therefore contain arm64 code, or the app would fail to start.
-if ! lipo -archs "$VLC/lib/libvlc.dylib" | grep -qw arm64; then
-  echo "The installed VLC.app has no Apple silicon (arm64) engine. Install the Apple silicon or Universal VLC 3.x." >&2
+# StudyO runs on Apple silicon Macs only (M1 and later). The video engine must therefore contain
+# arm64 code, or the app would fail to start.
+if ! lipo -archs "$ENGINE/lib/libvlc.dylib" | grep -qw arm64; then
+  echo "The engine in Engine/vlc has no Apple silicon (arm64) code. Delete Engine/vlc and install the Apple silicon or Universal VLC 3.x." >&2
   exit 1
 fi
 
@@ -41,12 +50,12 @@ swiftc -O -swift-version 5 -parse-as-library ${FLAGS[@]+"${FLAGS[@]}"} \
   -target "arm64-apple-macos14.0" \
   -import-objc-header Sources/CVLC/vlc_min.h \
   Sources/StudyOPlayer/*.swift \
-  -L "$VLC/lib" -lvlc -lvlccore \
+  -L "$ENGINE/lib" -lvlc -lvlccore \
   -Xlinker -rpath -Xlinker "@executable_path/../Frameworks/lib" \
   -o "$C/MacOS/StudyOPlayer"
 
 echo "Bundling the video engine…"
-cp -R "$VLC/lib" "$VLC/plugins" "$C/Frameworks/"
+cp -R "$ENGINE/lib" "$ENGINE/plugins" "$C/Frameworks/"
 # A Universal VLC carries Intel code too; strip it, since the app is Apple silicon only.
 for f in "$C/Frameworks/lib"/*.dylib "$C/Frameworks/plugins"/*.dylib; do
   if lipo -archs "$f" 2>/dev/null | grep -qw x86_64; then lipo "$f" -thin arm64 -output "$f"; fi

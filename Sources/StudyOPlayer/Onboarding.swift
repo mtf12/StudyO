@@ -7,7 +7,13 @@ struct OnboardingView: View {
     @EnvironmentObject var lang: Lang
     /// Called when the tour ends, by Skip or by the last button.
     let finish: () -> Void
-    @State private var page = 0
+    @State private var page: Int
+
+    /// `startPage` is only for the developer screenshot run; the app always starts the tour at 0.
+    init(startPage: Int = 0, finish: @escaping () -> Void) {
+        self.finish = finish
+        _page = State(initialValue: startPage)
+    }
 
     private let pageCount = 5
 

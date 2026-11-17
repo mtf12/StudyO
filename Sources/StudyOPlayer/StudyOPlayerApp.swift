@@ -183,6 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// STUDYO_SELFTEST="question" STUDYO_SELFTEST_FILE=/path/video  → plays, asks, prints, quits.
     private func runSelfTest() {
         let env = ProcessInfo.processInfo.environment
+        if let dir = env["STUDYO_SELFTEST_GALLERY"], let file = env["STUDYO_SELFTEST_FILE"] {
+            // Screenshots for the README, then quit: STUDYO_SELFTEST_GALLERY=<folder> STUDYO_SELFTEST_FILE=<video>
+            Task { @MainActor in await Gallery.run(dir: dir, video: URL(fileURLWithPath: file)) }
+            return
+        }
         if let out = env["STUDYO_SELFTEST_ABOUT"] {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -398,3 +403,115 @@ enum AppInfo {
         if let url = parts.url { NSWorkspace.shared.open(url) }
     }
 }
+
+#if SELFTEST
+/// Developer-only screenshot run for the README (compiled only by `./build.sh --selftest`).
+@MainActor
+enum Gallery {
+    static func shoot(_ window: NSWindow?, _ path: String) {
+        guard let view = window?.contentView?.superview,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        print("shot", (path as NSString).lastPathComponent)
+    }
+
+    static var main: NSWindow? { PlayerModel.shared.videoView.window }
+
+    static func wait(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9)) }
+
+    /// The engine draws the picture in a way a window capture cannot see, so for the shot the
+    /// current frame is laid into the video view as a still image, then everything is put back.
+    static func shootWithFrame(_ path: String) async {
+        let player = PlayerModel.shared
+        let video = player.videoView
+        guard let url = await player.snapshot(), let image = NSImage(contentsOf: url) else { shoot(main, path); return }
+        try? FileManager.default.removeItem(at: url)
+        let hidden = video.subviews.map(\.isHidden)
+        video.subviews.forEach { $0.isHidden = true }
+        video.layer?.contentsGravity = .resizeAspect
+        video.layer?.contents = image
+        await wait(0.3)
+        shoot(main, path)
+        video.layer?.contents = nil
+        zip(video.subviews, hidden).forEach { $0.isHidden = $1 }
+    }
+
+    static func ask(_ question: String) async {
+        let ai = AIModel.shared
+        ai.send(question)
+        await wait(0.5)
+        while ai.busy { await wait(0.3) }
+    }
+
+    static func run(dir: String, video: URL) async {
+        let out = { (name: String) in (dir as NSString).appendingPathComponent(name) }
+        let player = PlayerModel.shared, ai = AIModel.shared
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        Lang.shared.setting = "en"
+        main?.setContentSize(NSSize(width: 1240, height: 740))
+        await wait(3)
+
+        shoot(main, out("1-welcome.png"))
+
+        await ai.detect(force: true)
+        ai.selectedID = "claude"
+        if !ai.isConnected(ai.selected) {
+            ai.connect()
+            while ai.connecting { await wait(0.2) }
+        }
+        player.open(video)
+        await wait(4)
+        player.seek(toMs: 7_000)
+        await wait(1.5)
+        player.pause()
+        ai.newChat()
+        player.pokeControls()
+        await wait(0.8)
+        await shootWithFrame(out("2-player.png"))
+
+        await ask("Explain what is on screen right now, briefly.")
+        player.pokeControls()
+        await wait(0.6)
+        await shootWithFrame(out("3-ai-explains.png"))
+
+        Lang.shared.setting = "ar"
+        ai.newChat()
+        await ask("اشرح المثال اللي في السلايد ده بالعربي باختصار")
+        player.pokeControls()
+        await wait(0.8)
+        await shootWithFrame(out("4-arabic.png"))
+
+        Lang.shared.setting = "en"
+        NSApp.appearance = NSAppearance(named: .aqua)
+        ai.newChat()
+        await ask("In one sentence, what does the formula on screen mean?")
+        player.pokeControls()
+        await wait(0.8)
+        await shootWithFrame(out("5-light-mode.png"))
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+
+        // The tour page that explains the free and paid AI choices.
+        let tour = NSWindow(contentViewController: NSHostingController(
+            rootView: OnboardingView(startPage: 3) {}.environmentObject(Lang.shared)))
+        tour.styleMask = [.titled, .fullSizeContentView]
+        tour.titlebarAppearsTransparent = true
+        tour.orderFront(nil)
+        await wait(1)
+        shoot(tour, out("6-choose-ai.png"))
+        tour.close()
+
+        if let item = NSApp.mainMenu?.items.first?.submenu?.items.first(where: { $0.keyEquivalent == "," }),
+           let action = item.action {
+            NSApp.sendAction(action, to: item.target, from: item)
+        }
+        await wait(1.5)
+        shoot(NSApp.windows.first { $0.isVisible && $0 !== main && $0.title != "" || ($0.isVisible && $0 !== main && $0.identifier?.rawValue.contains("Settings") == true) }, out("7-settings.png"))
+
+        // Leave no trace of the run in the user's saved chats.
+        for session in ai.sessions where session.videoPath == video.path { ai.deleteSession(session) }
+        NSApp.terminate(nil)
+    }
+}
+#endif

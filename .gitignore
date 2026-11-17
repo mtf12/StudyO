@@ -1,2 +1,4 @@
 build/
 .DS_Store
+# Video engine copied from VLC (55 MB of binaries; refilled from VLC.app when missing)
+Engine/
