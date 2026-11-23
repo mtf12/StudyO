@@ -60,11 +60,31 @@ struct PressableStyle: ButtonStyle {
     }
 }
 
+/// The skip arrow's turn, as in Apple's own players: the arrow rotates a little in the skip's
+/// direction and settles back, while the number stays still (SF Symbols wiggle, by layer).
+struct SkipTurn: ViewModifier {
+    let trigger: Int
+    let forward: Bool
+    var active = true
+
+    func body(content: Content) -> some View {
+        if !active {
+            content
+        } else if #available(macOS 15.0, *) {
+            content.symbolEffect(forward ? .wiggle.clockwise.byLayer : .wiggle.counterClockwise.byLayer, value: trigger)
+        } else {
+            content.symbolEffect(.bounce.byLayer, value: trigger)
+        }
+    }
+}
+
 /// A glyph button with a soft highlight on hover.
 struct IconButton: View {
     let symbol: String
     var size: CGFloat = 14
     var help: String = ""
+    /// Skip buttons: Apple's small turn of the arrow each time the counter changes.
+    var turn: (trigger: Int, forward: Bool)? = nil
     let action: () -> Void
     @State private var hover = false
 
@@ -73,6 +93,7 @@ struct IconButton: View {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .medium))
                 .contentTransition(.symbolEffect(.replace))
+                .modifier(SkipTurn(trigger: turn?.trigger ?? 0, forward: turn?.forward ?? true, active: turn != nil))
                 .frame(width: 30, height: 30)
                 .background(Color.white.opacity(hover ? 0.14 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(Rectangle())
@@ -96,7 +117,11 @@ struct ContentView: View {
     @State private var dropTargeted = false
     @State private var dragBase: Double?
 
-    private var sidebarVisible: Bool { showAI && !(player.isFullscreen && !player.controlsVisible) }
+    @AppStorage(Prefs.chatFollowsPointer) private var chatFollowsPointer = true
+    private var sidebarVisible: Bool {
+        _ = chatFollowsPointer // redraw when the setting changes
+        return player.assistantVisible(showAI: showAI)
+    }
     private var onLeft: Bool { aiSide != "right" }
 
     var body: some View {
@@ -222,6 +247,15 @@ struct PlayerStage: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
             }
             FlashIndicator()
+            if let label = player.swipeLabel {
+                Text(label)
+                    .font(.system(size: 22, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20).padding(.vertical, 12)
+                    .glassPanel(cornerRadius: 18)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
 
             // Only the playback controls float over the picture. Opening files, the instructor
             // panel and Settings live in the menu bar; the file name is in the window title.
@@ -236,11 +270,11 @@ struct PlayerStage: View {
                     Spacer(minLength: 12)
                     // Floating button: show or hide the instructor.
                     Button {
-                        withAnimation(Theme.spring) { showAI.toggle() }
+                        withAnimation(Theme.spring) { player.toggleAssistant() }
                     } label: {
                         Image(systemName: "sparkles")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(showAI ? AnyShapeStyle(Theme.accentGradient)
+                            .foregroundStyle(player.assistantVisible(showAI: showAI) ? AnyShapeStyle(Theme.accentGradient)
                                              : player.hasMedia ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.primary))
                             .frame(width: 34, height: 34)
                             .glassPanel(cornerRadius: 17)
@@ -291,6 +325,7 @@ struct PlayerStage: View {
         .animation(Theme.spring, value: player.hasMedia)
         .animation(.easeOut(duration: 0.2), value: dropTargeted)
         .animation(Theme.spring, value: player.errorText)
+        .animation(.easeOut(duration: 0.15), value: player.swipeLabel == nil)
     }
 }
 
@@ -299,17 +334,24 @@ struct FlashIndicator: View {
     @EnvironmentObject var player: PlayerModel
     var body: some View {
         Image(systemName: player.flashSymbol)
-            .font(.system(size: 30, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: 84, height: 84)
-            .glassPanel(cornerRadius: 42)
-            .phaseAnimator([0, 1, 2], trigger: player.flashToken) { view, phase in
-                view.opacity(phase == 1 ? 1 : 0)
-                    .scaleEffect(phase == 0 ? 0.7 : (phase == 1 ? 1 : 1.2))
-            } animation: { phase in
-                phase == 1 ? .spring(response: 0.22, dampingFraction: 0.7) : .easeIn(duration: 0.4)
+            .font(.system(size: 32, weight: .semibold))
+            // Only skips change this counter, so play and pause never turn.
+            .modifier(SkipTurn(trigger: player.skipBackToken + player.skipForwardToken,
+                               forward: player.flashSymbol.hasPrefix("goforward")))
+        .foregroundStyle(.white)
+        .frame(width: 84, height: 84)
+        .glassPanel(cornerRadius: 42)
+        .phaseAnimator([0, 1, 2], trigger: player.flashToken) { view, phase in
+            view.opacity(phase == 1 ? 1 : 0)
+                .scaleEffect(phase == 0 ? 0.7 : (phase == 1 ? 1 : 1.2))
+        } animation: { phase in
+            switch phase {
+            case 1: .spring(response: 0.22, dampingFraction: 0.7)
+            case 2: .easeIn(duration: 0.4).delay(player.flashSymbol.hasPrefix("go") ? 0.3 : 0)
+            default: nil
             }
-            .allowsHitTesting(false)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -436,7 +478,8 @@ struct ControlHUD: View {
                                help: L("Full screen (F)")) { player.toggleFullscreen() }
                 }
                 HStack(spacing: 18) {
-                    IconButton(symbol: "gobackward.10", size: 18, help: L("Back 10 seconds")) { player.skip(-10) }
+                    IconButton(symbol: "gobackward.10", size: 18, help: L("Back 10 seconds"),
+                               turn: (player.skipBackToken, false)) { player.skip(-10) }
                     Button { player.togglePlay() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 28, weight: .semibold))
@@ -447,7 +490,8 @@ struct ControlHUD: View {
                     .buttonStyle(PressableStyle())
                     .foregroundStyle(.white)
                     .help(L("Play / Pause (Space)"))
-                    IconButton(symbol: "goforward.10", size: 18, help: L("Forward 10 seconds")) { player.skip(10) }
+                    IconButton(symbol: "goforward.10", size: 18, help: L("Forward 10 seconds"),
+                               turn: (player.skipForwardToken, true)) { player.skip(10) }
                 }
             }
             TimeRow(clock: player.clock)

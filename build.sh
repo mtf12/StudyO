@@ -129,16 +129,14 @@ for arg in "$@"; do
       echo "Creating DMG..."
       TEMP_DMG="build/temp_dmg.dmg"
       rm -f "$TEMP_DMG"
-      
-      # Size the image from what goes in it (plus room for the Finder layout), so it never runs out.
-      SIZE_MB=$(( $(du -sm "$STAGE" | cut -f1) + 40 ))
       MOUNT_DIR="/Volumes/StudyO"
       # A volume left mounted by an earlier run would make the attach below fail.
-      [ -d "$MOUNT_DIR" ] && { hdiutil detach "$MOUNT_DIR" -force >/dev/null 2>&1 || true; }
-      hdiutil create -volname "StudyO" -srcfolder "$STAGE" -fs HFS+ -format UDRW -size ${SIZE_MB}m "$TEMP_DMG" >/dev/null
+      [ -d "$MOUNT_DIR" ] && { diskutil eject "$MOUNT_DIR" >/dev/null 2>&1 || true; }
+      # A writable image of the folder first, so the Finder window can be laid out inside it.
+      diskutil image create from --format RAW --volumeName "StudyO" "$STAGE" "$TEMP_DMG" >/dev/null 2>&1 \
+        || { echo "Could not create the disk image." >&2; exit 1; }
+      diskutil image attach --mountPoint "$MOUNT_DIR" "$TEMP_DMG" >/dev/null
 
-      hdiutil attach "$TEMP_DMG" -readwrite -noverify -mountpoint "$MOUNT_DIR" >/dev/null
-      
       osascript <<EOF
 tell application "Finder"
     tell disk "StudyO"
@@ -166,11 +164,13 @@ EOF
       sync
       sleep 2
       
-      hdiutil detach "$MOUNT_DIR" -force >/dev/null 2>&1 || diskutil eject "$MOUNT_DIR" >/dev/null 2>&1 || true
+      diskutil eject "$MOUNT_DIR" >/dev/null 2>&1 || diskutil unmount force "$MOUNT_DIR" >/dev/null 2>&1 || true
       sleep 2
       
       echo "Compressing DMG..."
-      hdiutil convert "$TEMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null
+      # ULFO (LZFSE): smaller than the older zlib format, and opens on every macOS StudyO runs on.
+      diskutil image create from --format ULFO "$TEMP_DMG" "$DMG" >/dev/null 2>&1 \
+        || { echo "Could not compress the disk image." >&2; exit 1; }
       rm -f "$TEMP_DMG"
       rm -rf "$STAGE"
       

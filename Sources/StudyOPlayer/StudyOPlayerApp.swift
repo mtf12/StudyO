@@ -57,7 +57,7 @@ struct StudyOPlayerApp: App {
             CommandMenu(L("Display")) {
                 // (Settings… ⌘, is in the app menu, added by the Settings scene below.)
                 Button(showAI ? L("Hide Instructor") : L("Show Instructor")) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { showAI.toggle() }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { PlayerModel.shared.toggleAssistant() }
                 }
                 .keyboardShortcut("b")
                 Button((aiSide != "right" ? "✓ " : "") + L("Instructor on the Left")) { aiSide = "left" }
@@ -92,6 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chromeWatch: AnyCancellable?
     private var pinchTotal: CGFloat = 0
     private var pinchFired = false
+    // Two-finger horizontal swipe over the video: scrubs like a finger on the Touch Bar strip.
+    private var swipeAxis: Character? // "h" horizontal (scrubbing), "v" vertical (left alone)
+    private var swipeDX: CGFloat = 0
+    private var swipeDY: CGFloat = 0
+    private var swipeBaseMs: Double = 0
+    private var swipeHideWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.applyAppearance()
@@ -100,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let player = PlayerModel.shared
         let nc = NotificationCenter.default
         nc.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: nil, queue: .main) { _ in
+            player.chatOpenInFullscreen = false
             player.isFullscreen = true
         }
         nc.addObserver(forName: NSWindow.didExitFullScreenNotification, object: nil, queue: .main) { _ in
@@ -128,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runSelfTest()
         #endif
 
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .mouseMoved, .magnify]) { [weak self] event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .mouseMoved, .magnify, .scrollWheel]) { [weak self] event in
             // Player shortcuts belong to the player window only: Space, arrows and letters keep
             // their normal meaning in Settings, About and open panels.
             guard let window = event.window, window === player.videoView.window else { return event }
@@ -139,6 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .magnify:
                 self?.handlePinch(event)
                 return event
+            case .scrollWheel:
+                return self?.handleSwipe(event) == true ? nil : event
             default:
                 break
             }
@@ -158,6 +167,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return nil
         }
+    }
+
+    /// Two fingers moving left or right over the video move through it, as if dragging the
+    /// playhead: the further the fingers travel, the further the jump. Vertical scrolling and
+    /// scrolling over the instructor panel are left alone. Returns true when the event was used.
+    private func handleSwipe(_ event: NSEvent) -> Bool {
+        let player = PlayerModel.shared
+        let video = player.videoView
+        // Momentum after the fingers lift belongs to a swipe that already ended.
+        if !event.momentumPhase.isEmpty { return swipeAxis == "h" }
+        guard player.hasMedia, player.lengthMs > 0, event.hasPreciseScrollingDeltas else { return false }
+        if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+            let point = video.convert(event.locationInWindow, from: nil)
+            guard video.bounds.contains(point) else { swipeAxis = "v"; return false }
+            swipeAxis = nil
+            swipeDX = 0
+            swipeDY = 0
+            swipeBaseMs = player.timeMs
+            return false
+        }
+        guard event.phase.contains(.changed) || event.phase.contains(.ended) else {
+            if event.phase.contains(.cancelled) { finishSwipe() }
+            return false
+        }
+        guard swipeAxis != "v" else { return false }
+        // Natural scrolling flips the deltas; this gives the direction the fingers moved.
+        let fingersDX = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        swipeDX += fingersDX
+        swipeDY += abs(event.scrollingDeltaY)
+        if swipeAxis == nil {
+            guard abs(swipeDX) + swipeDY > 6 else { return false }
+            swipeAxis = abs(swipeDX) > swipeDY * 1.5 ? "h" : "v"
+            guard swipeAxis == "h" else { return false }
+        }
+        // The width of the video spans the whole of a short video, or ten minutes of a longer one.
+        let span = min(player.lengthMs, 600_000)
+        let msPerPoint = span / Double(max(video.bounds.width, 300))
+        let target = min(max(swipeBaseMs + Double(swipeDX) * msPerPoint, 0), player.lengthMs)
+        player.seek(toMs: target)
+        player.pokeControls()
+        let delta = (target - swipeBaseMs) / 1000
+        player.swipeLabel = (delta < 0 ? "−" : "+") + formatTime(abs(delta) * 1000) + "  ·  " + formatTime(target)
+        swipeHideWork?.cancel()
+        if event.phase.contains(.ended) { finishSwipe() }
+        return true
+    }
+
+    private func finishSwipe() {
+        let work = DispatchWorkItem { PlayerModel.shared.swipeLabel = nil }
+        swipeHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
     /// Trackpad pinch: spread two fingers to enter full screen, pinch them together to leave it.
@@ -273,6 +333,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("gaps between loud edges (ms, ideal 1000):", gaps)
                 print(String(format: "tallest bar ranged %.2f ... %.2f", barLow, barPeak))
                 print("meter bars max:", String(format: "%.2f", Double(AudioMeter.shared.bars.max() ?? 0)))
+                NSApp.terminate(nil)
+            }
+            return
+        }
+        if let file = env["STUDYO_SELFTEST_SEEK"] {
+            // Rapid seeking and the keep-awake assertion.
+            let player = PlayerModel.shared
+            player.open(URL(fileURLWithPath: file))
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                let start = player.timeMs
+                print("start", Int(start), "length", Int(player.lengthMs), "playing", player.isPlaying)
+                let skips = min(40, Int(player.lengthMs / 1000 / 5 / 2))
+                for _ in 0..<skips { player.skip(5); try? await Task.sleep(nanoseconds: 30_000_000) }
+                print("after \(skips) quick +5 s skips: shown", Int((player.timeMs - start) / 1000), "s ahead (expect \(skips * 5))")
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                print("engine time", Int(player.engineTimeMs() / 1000), "s, shown", Int(player.timeMs / 1000), "s")
+                let pm = Process()
+                pm.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+                pm.arguments = ["-g", "assertions"]
+                let pipe = Pipe(); pm.standardOutput = pipe
+                try? pm.run(); pm.waitUntilExit()
+                let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                print("display kept awake while playing:", text.contains("Playing a video"))
+                player.pause()
                 NSApp.terminate(nil)
             }
             return

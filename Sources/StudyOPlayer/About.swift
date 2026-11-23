@@ -35,7 +35,7 @@ struct AboutView: View {
     @EnvironmentObject var lang: Lang
 
     private var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.0"
     }
 
     var body: some View {

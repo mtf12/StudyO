@@ -42,7 +42,13 @@ final class PlayerModel: ObservableObject {
 
     @Published var hasMedia = false
     // The level meter sleeps while nothing plays; these wake it.
-    @Published var isPlaying = false { didSet { if isPlaying != oldValue { AudioMeter.shared.wake() } } }
+    @Published var isPlaying = false {
+        didSet {
+            guard isPlaying != oldValue else { return }
+            AudioMeter.shared.wake()
+            keepDisplayAwake(isPlaying)
+        }
+    }
     var timeMs: Double {
         get { clock.timeMs }
         set { if clock.timeMs != newValue { clock.timeMs = newValue } }
@@ -65,6 +71,14 @@ final class PlayerModel: ObservableObject {
     /// Bumped to flash a big play/pause/skip symbol over the video.
     @Published var flashToken = 0
     private(set) var flashSymbol = "play.fill"
+    /// Bumped on every skip back / forward: the skip arrows give Apple's small turn.
+    @Published var skipBackToken = 0
+    @Published var skipForwardToken = 0
+    /// Target time shown in the middle of the video while a two-finger swipe scrubs.
+    @Published var swipeLabel: String?
+    /// Full screen with "show the instructor when the pointer moves" off: the chat stays closed
+    /// until it is opened with ⌘B or the sparkles button.
+    @Published var chatOpenInFullscreen = false
     var hoveringControls = false
     /// Frames shown on the Touch Bar scrubber.
     @Published var thumbs: [CGImage?] = []
@@ -86,6 +100,23 @@ final class PlayerModel: ObservableObject {
     private var thumbsRequested = false
     /// Set when Apple's decoder cannot read the open file, so the libVLC frame maker is used.
     private var fastThumbsFailed = false
+    /// Keeps the display (and the Mac) awake while a video plays.
+    private var awakeActivity: NSObjectProtocol?
+    // Seeking: rapid requests (dragging, swiping, held arrow keys) are merged so the engine gets
+    // at most one seek every `seekInterval`; the shown time follows the request at once.
+    private var seekTarget: Double?
+    private var seekWork: DispatchWorkItem?
+    private var lastEngineSeek = Date.distantPast
+    private var holdClockUntil = Date.distantPast
+    private let seekInterval: TimeInterval = 0.12
+    // Freeze watch: the picture stopping while the sound goes on.
+    private var lastDisplayed: Int32 = -1
+    private var lastDecoded: Int32 = 0
+    private var lastLost: Int32 = 0
+    private var frozenChecks = 0
+    private var freezeRecoveries = 0
+    /// Set after the hardware decoder froze twice on the open file; it is then decoded in software.
+    private var softwareDecoding = false
     static let thumbCount = 70
     let snapshotDir: URL
 
@@ -133,9 +164,7 @@ final class PlayerModel: ObservableObject {
         // No network lookups, no interactive prompts: this is a local-file player.
         // --no-osd: the engine never draws its own text (file paths, status) over the picture.
         var args = ["--no-video-title-show", "--quiet", "--snapshot-format=jpg", "--no-snapshot-preview",
-                    "--no-metadata-network-access", "--no-interact", "--no-osd",
-                    // No per-frame playback statistics (nothing reads them).
-                    "--no-stats"]
+                    "--no-metadata-network-access", "--no-interact", "--no-osd"]
         #if SELFTEST
         if ProcessInfo.processInfo.environment["STUDYO_VLC_VERBOSE"] != nil {
             args.removeAll { $0 == "--quiet" }
@@ -224,7 +253,11 @@ final class PlayerModel: ObservableObject {
             return
         }
         saveResumePosition()
+        cancelPendingSeek()
+        if !restarting { softwareDecoding = false; freezeRecoveries = 0 }
+        resetFreezeWatch()
         libvlc_media_add_option(media, Prefs.bool(Prefs.subAutoload) ? ":sub-autodetect-file" : ":no-sub-autodetect-file")
+        if softwareDecoding { libvlc_media_add_option(media, ":avcodec-hw=none") }
         libvlc_media_player_set_media(mp, media)
         libvlc_media_release(media)
         currentURL = url
@@ -295,7 +328,7 @@ final class PlayerModel: ObservableObject {
     }
 
     func seek(toMs ms: Double) {
-        guard let mp, hasMedia else { return }
+        guard mp != nil, hasMedia else { return }
         let clamped = max(0, min(ms, max(lengthMs - 500, 0)))
         if ended, let url = currentURL {
             // The file has to be reopened; the engine ignores a seek until it is playing again,
@@ -304,14 +337,41 @@ final class PlayerModel: ObservableObject {
             timeMs = clamped
             return
         }
-        libvlc_media_player_set_time(mp, Int64(clamped))
         timeMs = clamped
+        holdClockUntil = Date().addingTimeInterval(0.7)
+        seekTarget = clamped
+        let wait = seekInterval - Date().timeIntervalSince(lastEngineSeek)
+        if wait <= 0 {
+            applySeek()
+        } else if seekWork == nil {
+            let work = DispatchWorkItem { [weak self] in self?.applySeek() }
+            seekWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
+        }
+    }
+
+    /// Hands the latest requested position to the engine.
+    private func applySeek() {
+        seekWork = nil
+        guard let mp, let target = seekTarget else { return }
+        seekTarget = nil
+        lastEngineSeek = Date()
+        holdClockUntil = Date().addingTimeInterval(0.7) // the engine reports the old time for a moment
+        resetFreezeWatch()
+        libvlc_media_player_set_time(mp, Int64(target))
+    }
+
+    private func cancelPendingSeek() {
+        seekWork?.cancel()
+        seekWork = nil
+        seekTarget = nil
     }
 
     func skip(_ seconds: Double) {
         guard hasMedia else { return }
         seek(toMs: timeMs + seconds * 1000)
-        flash(seconds < 0 ? "gobackward" : "goforward")
+        flash(Self.skipSymbol(forward: seconds > 0, seconds: seconds))
+        if seconds < 0 { skipBackToken += 1 } else { skipForwardToken += 1 }
         pokeControls()
     }
 
@@ -324,6 +384,48 @@ final class PlayerModel: ObservableObject {
     private func flash(_ symbol: String) {
         flashSymbol = symbol
         flashToken += 1
+    }
+
+    /// Apple's skip symbol with the number inside when one exists (5, 10, 15, 30…).
+    static func skipSymbol(forward: Bool, seconds: Double) -> String {
+        let base = forward ? "goforward" : "gobackward"
+        let n = Int(abs(seconds).rounded())
+        return [5, 10, 15, 30, 45, 60, 75, 90].contains(n) ? "\(base).\(n)" : base
+    }
+
+    /// Stops the screen from dimming and the Mac from sleeping while a video plays.
+    private func keepDisplayAwake(_ awake: Bool) {
+        if awake, awakeActivity == nil {
+            awakeActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled, .userInitiated],
+                reason: "Playing a video")
+        } else if !awake, let activity = awakeActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            awakeActivity = nil
+        }
+    }
+
+    /// Shows or hides the instructor (⌘B and the sparkles button).
+    func toggleAssistant() {
+        let defaults = UserDefaults.standard
+        let shown = defaults.bool(forKey: "showAI")
+        if isFullscreen && !Prefs.bool(Prefs.chatFollowsPointer) {
+            if shown && chatOpenInFullscreen {
+                chatOpenInFullscreen = false
+            } else {
+                defaults.set(true, forKey: "showAI")
+                chatOpenInFullscreen = true
+            }
+        } else {
+            defaults.set(!shown, forKey: "showAI")
+        }
+    }
+
+    /// Whether the instructor panel is on screen now.
+    func assistantVisible(showAI: Bool) -> Bool {
+        guard showAI else { return false }
+        guard isFullscreen else { return true }
+        return Prefs.bool(Prefs.chatFollowsPointer) ? controlsVisible : chatOpenInFullscreen
     }
 
     /// Plays the current file again from the start (after it ended, or when repeating).
@@ -435,12 +537,12 @@ final class PlayerModel: ObservableObject {
 
     /// Saves the frame currently on screen as a JPEG and returns its URL.
     /// Main actor: it shares the player's state with the playback timer.
-    @MainActor func snapshot() async -> URL? {
+    @MainActor func snapshot(width: UInt32 = 1280) async -> URL? {
         guard let mp, hasMedia else { return nil }
         snapshotCount += 1
         let url = snapshotDir.appendingPathComponent("frame-\(snapshotCount).jpg")
         try? FileManager.default.removeItem(at: url)
-        guard libvlc_video_take_snapshot(mp, 0, url.path, 1280, 0) == 0 else { return nil }
+        guard libvlc_video_take_snapshot(mp, 0, url.path, width, 0) == 0 else { return nil }
         for _ in 0..<30 {
             if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size > 0 {
                 try? await Task.sleep(nanoseconds: 80_000_000) // let the writer finish
@@ -493,8 +595,10 @@ final class PlayerModel: ObservableObject {
             let len = Double(libvlc_media_player_get_length(mp))
             if len > 0 && len != lengthMs { lengthMs = len }
             let t = Double(libvlc_media_player_get_time(mp))
-            if t >= 0 && abs(t - timeMs) > 100 { timeMs = t }
+            // Right after a seek the engine still reports the old time; keep the requested one.
+            if t >= 0 && abs(t - timeMs) > 100 && seekTarget == nil && Date() >= holdClockUntil { timeMs = t }
         }
+        if state == 3 && tickCount % 4 == 0 { watchForFrozenPicture(mp) }
         if tickCount % 8 == 0 { refreshTracks() }
         if !thumbsRequested { startThumbnailsIfNeeded() } // e.g. the Touch Bar has just appeared
 
@@ -508,6 +612,40 @@ final class PlayerModel: ObservableObject {
         if tickCount % 20 == 0 { saveResumePosition() }
         let level: NSWindow.Level = (Prefs.bool(Prefs.keepOnTop) && isPlaying) ? .floating : .normal
         if let window = videoView.window, window.level != level, !isFullscreen { window.level = level }
+    }
+
+    private func resetFreezeWatch() {
+        lastDisplayed = -1
+        frozenChecks = 0
+    }
+
+    /// Once a second while playing: if the decoder keeps producing frames (or dropping them as late)
+    /// but none reaches the screen, the picture has frozen while the sound goes on. A seek to the
+    /// current position restarts the picture; if it freezes again, the file is reopened with
+    /// software decoding at the same spot.
+    private func watchForFrozenPicture(_ mp: OpaquePointer) {
+        guard let media = libvlc_media_player_get_media(mp) else { return }
+        defer { libvlc_media_release(media) }
+        var stats = libvlc_media_stats_t()
+        guard libvlc_media_get_stats(media, &stats) != 0 else { return }
+        let displayed = stats.i_displayed_pictures, decoded = stats.i_decoded_video, lost = stats.i_lost_pictures
+        defer { lastDisplayed = displayed; lastDecoded = decoded; lastLost = lost }
+        // Audio only, a cover picture, or the first reading after a seek: nothing to compare.
+        guard lastDisplayed >= 0, decoded > 30, Date() >= holdClockUntil else { frozenChecks = 0; return }
+        let stuck = displayed == lastDisplayed && (decoded > lastDecoded || lost > lastLost)
+        frozenChecks = stuck ? frozenChecks + 1 : 0
+        guard frozenChecks >= 2 else { return }
+        frozenChecks = 0
+        freezeRecoveries += 1
+        let now = Double(libvlc_media_player_get_time(mp))
+        dbg("frozen picture at \(Int(now)) ms, recovery \(freezeRecoveries)")
+        if freezeRecoveries >= 2, !softwareDecoding, let url = currentURL {
+            softwareDecoding = true
+            restart(url, at: now)
+        } else {
+            libvlc_media_player_set_time(mp, Int64(max(now, 0)))
+            resetFreezeWatch()
+        }
     }
 
     /// Fills the Touch Bar strip: Apple's hardware decoder first (MP4/MOV, under a second), and

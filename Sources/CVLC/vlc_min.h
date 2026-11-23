@@ -69,6 +69,27 @@ void libvlc_video_set_format(libvlc_media_player_t *mp, const char *chroma,
 int libvlc_video_get_size(libvlc_media_player_t *mp, unsigned num, unsigned *px, unsigned *py);
 void libvlc_media_add_option(libvlc_media_t *media, const char *option);
 
+// Playback counters (libVLC 3 layout), read to notice a picture that stopped moving.
+typedef struct libvlc_media_stats_t {
+    int i_read_bytes;
+    float f_input_bitrate;
+    int i_demux_read_bytes;
+    float f_demux_bitrate;
+    int i_demux_corrupted;
+    int i_demux_discontinuity;
+    int i_decoded_video;
+    int i_decoded_audio;
+    int i_displayed_pictures;
+    int i_lost_pictures;
+    int i_played_abuffers;
+    int i_lost_abuffers;
+    int i_sent_packets;
+    int i_sent_bytes;
+    float f_send_bitrate;
+} libvlc_media_stats_t;
+int libvlc_media_get_stats(libvlc_media_t *media, libvlc_media_stats_t *stats);
+libvlc_media_t *libvlc_media_player_get_media(libvlc_media_player_t *mp);
+
 // Core variable access, used only to read the live audio level published by the
 // engine's "audiobargraph_a" filter (for the waveform display).
 typedef union {

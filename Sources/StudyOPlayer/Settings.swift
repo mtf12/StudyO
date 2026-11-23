@@ -17,6 +17,8 @@ enum Prefs {
     static let aiSendFrame = "aiSendFrame"
     static let aiSendSubs = "aiSendSubs"
     static let aiAnswerLang = "aiAnswerLang"
+    /// In full screen, moving the pointer brings the instructor panel back with the controls.
+    static let chatFollowsPointer = "chatFollowsPointer"
 
     /// Preference key holding the model name used for a cloud AI.
     static func model(_ kind: AIProvider.Kind) -> String { "aiModel." + kind.rawValue }
@@ -25,7 +27,7 @@ enum Prefs {
         UserDefaults.standard.register(defaults: [
             keepOnTop: false, resume: true, autoPlay: true, loop: false, seekStep: 5.0, defaultRate: 1.0,
             rememberVolume: true, volume: 100.0, subAutoload: true, subScale: 100,
-            aiSendFrame: true, aiSendSubs: true, aiAnswerLang: "auto",
+            aiSendFrame: true, aiSendSubs: true, aiAnswerLang: "auto", chatFollowsPointer: true,
         ])
     }
 
@@ -68,6 +70,7 @@ private struct GeneralSettings: View {
     @AppStorage("aiSide") private var aiSide = "right"
     @AppStorage(Prefs.keepOnTop) private var keepOnTop = false
     @AppStorage(Prefs.resume) private var resume = true
+    @AppStorage(Prefs.chatFollowsPointer) private var chatFollowsPointer = true
     @AppStorage(Prefs.appearance) private var appearance = "system"
 
     var body: some View {
@@ -92,6 +95,12 @@ private struct GeneralSettings: View {
             Section {
                 Toggle(L("Keep the window on top while playing"), isOn: $keepOnTop)
                 Toggle(L("Continue each video where I stopped"), isOn: $resume)
+            }
+            Section {
+                Toggle(L("In full screen, show the instructor when the pointer moves"), isOn: $chatFollowsPointer)
+            } footer: {
+                Text(L("When this is off, the instructor stays closed in full screen until you open it with ⌘B or the ✦ button."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section { DefaultPlayerRow() }
         }
@@ -238,6 +247,7 @@ private struct ShortcutSettings: View {
                     }
                 }
                 LabeledContent(L("Spread or pinch two fingers"), value: L("Full Screen"))
+                LabeledContent(L("Swipe two fingers left or right"), value: L("Scrub through the video"))
             }
         }
         .formStyle(.grouped)
